@@ -1,8 +1,5 @@
 package com.zhiquanyeo.ftl.ansible.protocol.packet;
 
-import java.util.HashMap;
-import java.util.Map;
-
 public abstract class ProtocolPacket {
 	
 	public static class FIELDS {
@@ -49,6 +46,7 @@ public abstract class ProtocolPacket {
 	protected int d_headerSize;
 	
 	protected Byte[] d_data;
+	protected int d_dataLen;
 	
 	protected int d_checksum;
 	
@@ -78,5 +76,13 @@ public abstract class ProtocolPacket {
 	
 	public void setChecksum(int val) {
 		this.d_checksum = val;
+	}
+	
+	public void setDLEN(int val) {
+		this.d_dataLen = val;
+	}
+	
+	public int getDLEN() {
+		return this.d_dataLen;
 	}
 }

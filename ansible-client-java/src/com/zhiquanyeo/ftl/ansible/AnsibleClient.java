@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
-import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -17,8 +16,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.zhiquanyeo.ftl.ansible.protocol.AnsiblePacket;
 import com.zhiquanyeo.ftl.ansible.protocol.CommandValidationException;
 import com.zhiquanyeo.ftl.ansible.protocol.ProtocolCommands;
-import com.zhiquanyeo.ftl.ansible.protocol.ProtocolCommands.ClientCommand;
+import com.zhiquanyeo.ftl.ansible.protocol.ProtocolCommands.AnsibleClientCommand;
 import com.zhiquanyeo.ftl.ansible.protocol.ProtocolCommands.CommandParam;
+import com.zhiquanyeo.ftl.ansible.protocol.ProtocolEvents;
+import com.zhiquanyeo.ftl.ansible.protocol.ProtocolEvents.AnsibleServerEvent;
 import com.zhiquanyeo.ftl.ansible.protocol.ProtocolValidator;
 import com.zhiquanyeo.ftl.ansible.protocol.packet.ClientPacket;
 import com.zhiquanyeo.ftl.ansible.protocol.packet.ProtocolPacket;
@@ -58,6 +59,10 @@ public class AnsibleClient {
 	private Timer d_heartbeatTimer = new Timer();
 	private Timer d_reqTimeoutTimer = new Timer();
 	
+	private boolean d_shuttingDown = false;
+	
+	private ArrayList<IAnsibleClientListener> d_listeners = new ArrayList<>();
+	
 	public AnsibleClient(String host, int port) {
 		this.d_host = host;
 		this.d_port = port;
@@ -80,22 +85,23 @@ public class AnsibleClient {
 			// Now decide what to do
 			if (packet instanceof ServerResponsePacket) {
 				ServerResponsePacket srPacket = (ServerResponsePacket)packet;
+				int seq = (int)Integer.toUnsignedLong(srPacket.getSEQ());
 				// Get the outstanding request from the map
-				OutstandingRequest oReq = this.d_outstandingRequests.get(srPacket.getSEQ());
+				OutstandingRequest oReq = this.d_outstandingRequests.get(seq);
 				if (oReq == null) {
-					System.err.println("Could not find outstanding request #" + srPacket.getSEQ());
+					System.err.println("Could not find outstanding request #" + seq);
 					return;
 				}
 				
 				// Look up info
-				ClientCommand cmdInfo = ProtocolCommands.lookupByBytecode(oReq.packet.DID, oReq.packet.CID);
+				AnsibleClientCommand cmdInfo = ProtocolCommands.lookupByBytecode(oReq.packet.DID, oReq.packet.CID);
 				if (cmdInfo == null) {
 					System.err.println("Invalid command!");
-					this.d_outstandingRequests.remove(srPacket.getSEQ());
+					this.d_outstandingRequests.remove(seq);
 					return;
 				}
 				
-				this.d_outstandingRequests.remove(srPacket.getSEQ());
+				this.d_outstandingRequests.remove(seq);
 				
 				Object retVal = null;
 				if (oReq.callback != null) {
@@ -119,35 +125,42 @@ public class AnsibleClient {
 					}
 					
 					if (retVal != null) {
-						oReq.callback.onRequestSuccess(srPacket.getSEQ(), oReq.packet, srPacket.getMRSP(), retVal);
+						oReq.callback.onRequestSuccess(seq, oReq.packet, srPacket.getMRSP(), retVal);
 					}
 					else {
-						oReq.callback.onRequestSuccess(srPacket.getSEQ(), oReq.packet, srPacket.getMRSP());
+						oReq.callback.onRequestSuccess(seq, oReq.packet, srPacket.getMRSP());
 					}
 				}
 			}
 			else {
 				ServerAsyncPacket saPacket = (ServerAsyncPacket)packet;
-				// TODO Implement
+				AnsibleServerEvent evtInfo = ProtocolEvents.lookupByBytecode(saPacket.getID_CODE());
+				
+				if (evtInfo != null) {
+					emitAsyncEvent(evtInfo.name, saPacket.getDATA());
+				}
+				else {
+					System.err.println("Unknown Async event received");
+				}
 			}
 		}
 	}
 	
-	public void connect() {
+	public boolean connect() {
 		if (this.d_state != ConnectionState.NOT_CONNECTED) {
-			return;
+			return true;
 		}
 		
 		try {
 			this.d_socket = new Socket(this.d_host, this.d_port);
 			this.d_outStream = this.d_socket.getOutputStream();
 		}
-		catch (UnknownHostException e) {
+		catch (Exception e) {
 			e.printStackTrace();
+			return false;
 		}
-		catch (IOException e) {
-			e.printStackTrace();
-		}
+		
+		this.d_shuttingDown = false;
 		
 		final Thread listeningThread = new Thread() {
 			@Override
@@ -157,8 +170,15 @@ public class AnsibleClient {
 					while (!shouldStop.get()) {
 						byte[] inBuf = new byte[255];
 						int bytesRead = inStream.read(inBuf, 0, inBuf.length);
-						handleIncomingBuffer(inBuf, bytesRead);
+						if (bytesRead == -1) {
+							shouldStop.set(true);
+							shutdownNetworking();
+						}
+						else {
+							handleIncomingBuffer(inBuf, bytesRead);
+						}
 					}
+					System.out.println("Terminating Listener Thread");
 				} catch (IOException e) {
 					e.printStackTrace();
 				}
@@ -174,7 +194,18 @@ public class AnsibleClient {
 					@Override
 					public void onRequestSuccess(int seq, ClientPacket packet, Object... args) {
 						// args[0] will be MRSP for response messages, and ID_CODE for async
-						System.out.println("HBEAT success. State = " + (Integer)args[1]);
+						int newState = (Integer)args[1];
+						ConnectionState oldState = d_state;
+						if (newState == 0) {
+							d_state = ConnectionState.ACTIVE;
+						}
+						else {
+							d_state = ConnectionState.QUEUED;
+						}
+						
+						if (d_state != oldState) {
+							emitStateChangedEvent(oldState, d_state);
+						}
 					}
 					@Override
 					public void onRequestFailure(int seq, ClientPacket packet, RequestFailedException e) {
@@ -212,9 +243,16 @@ public class AnsibleClient {
 				
 			}
 		}, 0, 500);
+		
+		return true;
 	}
 	
 	public synchronized boolean sendRequest(String requestType, Object... arguments) {
+		if (this.d_state == ConnectionState.NOT_CONNECTED && requestType != "SYS:HBEAT") {
+			System.err.println("Attempting to send message while not connected");
+			return false;
+		}
+		
 		try {
 			ProtocolValidator.validateCommand(requestType, arguments);
 		}
@@ -224,7 +262,7 @@ public class AnsibleClient {
 		}
 		
 		// By this point, cmdInfo will be valid since we've gone through validation
-		ClientCommand cmdInfo = ProtocolCommands.lookupByCommand(requestType);
+		AnsibleClientCommand cmdInfo = ProtocolCommands.lookupByCommand(requestType);
 		
 		// Figure out if there is a callback
 		IRequestCallback callback = null;
@@ -311,5 +349,65 @@ public class AnsibleClient {
 		return true;
 	}
 	
+	private synchronized void shutdownNetworking() {
+		if (this.d_shuttingDown) {
+			return;
+		}
+		this.d_shuttingDown = true;
+		
+		// Cancel all timers
+		if (this.d_heartbeatTimer != null) {
+			this.d_heartbeatTimer.cancel();
+		}
+		
+		if (this.d_reqTimeoutTimer != null) {
+			this.d_reqTimeoutTimer.cancel();
+		}
+		
+		this.d_state = ConnectionState.NOT_CONNECTED;
+		
+		// Shutdown the socket
+		try {
+			this.d_socket.close();
+		}
+		catch (IOException e) {
+			e.printStackTrace();
+		}
+		
+		this.d_socket = null;
+	}
+	
+	// Event notifications
+	private void emitStateChangedEvent(ConnectionState oldState, ConnectionState newState) {
+		for (IAnsibleClientListener listener : this.d_listeners) {
+			listener.onClientStateChanged(oldState, newState);
+		}
+	}
+	
+	private void emitAsyncEvent(String evtType, Byte[] data) {
+		for (IAnsibleClientListener listener : this.d_listeners) {
+			listener.onAsyncEventReceived(evtType, data);
+		}
+	}
+	
 	// Potentially Public Interface?
+	public boolean isConnected() {
+		return (this.d_state != ConnectionState.NOT_CONNECTED);
+	}
+	
+	public boolean isActive() {
+		return (this.d_state == ConnectionState.ACTIVE);
+	}
+	
+	public boolean isQueued() {
+		return (this.d_state == ConnectionState.QUEUED);
+	}
+	
+	public void addListener(IAnsibleClientListener listener) {
+		this.d_listeners.add(listener);
+	}
+	
+	public void removeListener(IAnsibleClientListener listener) {
+		while (this.d_listeners.remove(listener)) {};
+	}
 }

@@ -9,7 +9,6 @@ public class ServerResponsePacket extends ProtocolPacket {
 	
 	private int d_mrsp;
 	private int d_seq;
-	private int d_dataLen;
 	
 	public ServerResponsePacket(int MRSP, int SEQ, int DLEN) {
 		this.d_type = "ServerResponse";
@@ -27,9 +26,5 @@ public class ServerResponsePacket extends ProtocolPacket {
 	
 	public int getSEQ() {
 		return this.d_seq;
-	}
-	
-	public int getDLEN() {
-		return this.d_dataLen;
 	}
 }

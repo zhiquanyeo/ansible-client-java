@@ -17,7 +17,6 @@ public class AnsiblePacket {
 	
 	
 	private ArrayList<Byte> d_partialBuffer = new ArrayList<>();
-	private int d_partialCounter = 0;
 	
 	// TODO Implement
 	public ArrayList<Byte> create(ClientPacket packet) {
@@ -82,12 +81,13 @@ public class AnsiblePacket {
 	
 	
 	// Helper Functions
+	@SuppressWarnings("unused")
 	private ProtocolPacket parseImpl(ArrayList<Byte> buffer) {
-		int sop1 = buffer.get(ProtocolPacket.FIELDS.sop1.pos);
-		int sop2 = buffer.get(ProtocolPacket.FIELDS.sop2.pos);
-		int bByte2 = buffer.get(ProtocolPacket.FIELDS.mrspIdCode);
-		int bByte3 = buffer.get(ProtocolPacket.FIELDS.seqMsb);
-		int bByte4 = buffer.get(ProtocolPacket.FIELDS.dlenLsb);
+		int sop1 = buffer.get(ProtocolPacket.FIELDS.sop1.pos) & 0xFF;
+		int sop2 = buffer.get(ProtocolPacket.FIELDS.sop2.pos) & 0xFF;
+		int bByte2 = buffer.get(ProtocolPacket.FIELDS.mrspIdCode) & 0xFF;
+		int bByte3 = buffer.get(ProtocolPacket.FIELDS.seqMsb) & 0xFF;
+		int bByte4 = buffer.get(ProtocolPacket.FIELDS.dlenLsb) & 0xFF;
 		
 		int dLen = this.extractDlen(buffer);
 		
@@ -189,10 +189,10 @@ public class AnsiblePacket {
 	
 	private int extractDlen(ArrayList<Byte> buffer) {
 		if (buffer.get(ProtocolPacket.FIELDS.sop2.pos) == ProtocolPacket.FIELDS.sop2.sync) {
-			return buffer.get(ProtocolPacket.FIELDS.dlenLsb);
+			return buffer.get(ProtocolPacket.FIELDS.dlenLsb) & 0xFF;
 		}
 		
-		return (buffer.get(ProtocolPacket.FIELDS.seqMsb) << 8) | buffer.get(ProtocolPacket.FIELDS.dlenLsb);
+		return ((buffer.get(ProtocolPacket.FIELDS.seqMsb) << 8) | buffer.get(ProtocolPacket.FIELDS.dlenLsb)) & 0xFFFF;
 	}
 	
 	private int checkExpectedSize(ArrayList<Byte> buffer) {

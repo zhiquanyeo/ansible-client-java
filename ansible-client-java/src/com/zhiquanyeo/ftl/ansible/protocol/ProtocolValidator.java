@@ -1,18 +1,19 @@
 package com.zhiquanyeo.ftl.ansible.protocol;
 
-import com.zhiquanyeo.ftl.ansible.protocol.ProtocolCommands.ClientCommand;
+import com.zhiquanyeo.ftl.ansible.protocol.ProtocolCommands.AnsibleClientCommand;
 import com.zhiquanyeo.ftl.ansible.protocol.ProtocolCommands.CommandParam;
 
 public class ProtocolValidator {
 	public static final int MIN_SERVER_PACKET_SIZE = 6;
 	public static final int MIN_CLIENT_PACKET_SIZE = 7;
 	
+	@SuppressWarnings("unused")
 	private static void verifyIntegerParam(String type, Object value) {
 		Integer test = (Integer)value;
 	}
 	
 	public static void validateCommand(String command, Object[] args) throws CommandValidationException {
-		ClientCommand cmd = ProtocolCommands.lookupByCommand(command);
+		AnsibleClientCommand cmd = ProtocolCommands.lookupByCommand(command);
 		if (cmd == null) {
 			throw new CommandValidationException(CommandValidationException.INVALID_COMMAND, "'" + command + "' is not a valid command.");
 		}
